@@ -158,4 +158,3 @@ python -m pytest tests/ -v
 - Foreign symbols require corresponding IBKR market data subscriptions
 <!-- updated: 2025-12-16 -->
 
-
