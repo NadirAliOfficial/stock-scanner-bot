@@ -156,4 +156,4 @@ python -m pytest tests/ -v
 - Symbols with insufficient history are skipped and logged
 - The bot performs **analysis only** — no trade execution
 - Foreign symbols require corresponding IBKR market data subscriptions
-<!-- updated: 2023-12-21-r01 -->
+<!-- updated: 2024-04-19-r01 -->
