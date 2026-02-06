@@ -157,4 +157,3 @@ python -m pytest tests/ -v
 - The bot performs **analysis only** — no trade execution
 - Foreign symbols require corresponding IBKR market data subscriptions
 <!-- updated: 2025-12-16 -->
-
