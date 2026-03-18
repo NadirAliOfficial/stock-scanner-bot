@@ -25,8 +25,8 @@ OUTPUT_DIR = "output"
 
 # IBKR connection settings
 IB_HOST      = "127.0.0.1"
-IB_PORT      = 7496        # 7496 = live, 7497 = paper
-IB_CLIENT_ID = 3           # must be unique across all bots
+IB_PORT      = 4001        # IB Gateway live
+IB_CLIENT_ID = 3           # confirmed by client
 
 # Support/resistance lookback window in trading days (~1 year)
 SR_PERIOD = 252
