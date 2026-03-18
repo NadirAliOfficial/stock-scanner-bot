@@ -28,6 +28,16 @@ IB_HOST      = "127.0.0.1"
 IB_PORT      = 4001        # IB Gateway live
 IB_CLIENT_ID = 3           # confirmed by client
 
+# Symbol overrides: maps watchlist symbol → (ib_symbol, exchange, currency)
+# Use this for tickers that need non-default IBKR contract definitions
+SYMBOL_MAP = {
+    "BRK-B":   ("BRK B",  "SMART", "USD"),
+    "NESN.SW": ("NESN",   "EBS",   "CHF"),
+    "CSPX.L":  ("CSPX",   "LSE",   "USD"),
+    "SIE.DE":  ("SIE",    "XETRA", "EUR"),
+    "ABB":     ("ABB",    "NYSE",  "USD"),
+}
+
 # Support/resistance lookback window in trading days (~1 year)
 SR_PERIOD = 252
 
@@ -93,9 +103,14 @@ def load_watchlist(path: str) -> list[str]:
 
 # ─── IBKR data fetching ───────────────────────────────────────────────────────
 
+def make_contract(symbol: str) -> Stock:
+    ib_sym, exchange, currency = SYMBOL_MAP.get(symbol, (symbol, "SMART", "USD"))
+    return Stock(ib_sym, exchange, currency)
+
+
 def fetch_daily(ib: IB, symbol: str) -> pd.DataFrame:
     """Fetch ~2 years of daily OHLCV from IBKR."""
-    contract = Stock(symbol, "SMART", "USD")
+    contract = make_contract(symbol)
     bars = ib.reqHistoricalData(
         contract,
         endDateTime="",
@@ -117,7 +132,7 @@ def fetch_daily(ib: IB, symbol: str) -> pd.DataFrame:
 
 def fetch_weekly(ib: IB, symbol: str) -> pd.DataFrame:
     """Fetch ~5 years of weekly OHLCV from IBKR. Drops the current incomplete week."""
-    contract = Stock(symbol, "SMART", "USD")
+    contract = make_contract(symbol)
     bars = ib.reqHistoricalData(
         contract,
         endDateTime="",
@@ -155,8 +170,7 @@ def weekly_ma200_metrics(weekly: pd.DataFrame) -> tuple[float, float, bool, int]
     ma200  = closes.rolling(200).mean()
 
     current_ma200 = float(ma200.iloc[-1])
-    prev_ma200    = float(ma200.iloc[-2])
-    trending_up   = current_ma200 > prev_ma200
+    trending_up   = current_ma200 > float(ma200.iloc[-2])
 
     weeks_above = 0
     for i in range(len(closes) - 1, -1, -1):
@@ -167,7 +181,7 @@ def weekly_ma200_metrics(weekly: pd.DataFrame) -> tuple[float, float, bool, int]
         else:
             break
 
-    return current_ma200, prev_ma200, trending_up, weeks_above
+    return current_ma200, trending_up, weeks_above
 
 
 def calc_support_resistance(daily: pd.DataFrame, period: int) -> tuple[float, float]:
@@ -324,7 +338,7 @@ def process_symbol(ib: IB, symbol: str, logger: logging.Logger) -> dict | None:
 
         close = float(daily["Close"].iloc[-1])
         support, resistance = calc_support_resistance(daily, SR_PERIOD)
-        ma200, prev_ma200, ma200_up, weeks_above = weekly_ma200_metrics(weekly)
+        ma200, ma200_up, weeks_above = weekly_ma200_metrics(weekly)
         avg_dollar_volume = calc_avg_dollar_volume(daily)
         avg_volume_20d    = float(daily["Volume"].iloc[-21:-1].mean())
         latest_volume     = int(daily["Volume"].iloc[-1])
