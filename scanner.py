@@ -2,6 +2,7 @@
 """
 Stock Scanner — Daily post-market technical analysis bot.
 Runs once per day after US market close.
+Data source: Interactive Brokers (IB Gateway / TWS) via ib_insync.
 Outputs a shortlist of trade candidates based on predefined technical criteria.
 """
 
@@ -13,7 +14,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import yfinance as yf
+from ib_insync import IB, Stock, util
 
 # ─── Configuration ────────────────────────────────────────────────────────────
 
@@ -21,6 +22,11 @@ import yfinance as yf
 WATCHLIST_FILE = "watchlist.csv"
 
 OUTPUT_DIR = "output"
+
+# IBKR connection settings
+IB_HOST      = "127.0.0.1"
+IB_PORT      = 7496        # 7496 = live, 7497 = paper
+IB_CLIENT_ID = 3           # must be unique across all bots
 
 # Support/resistance lookback window in trading days (~1 year)
 SR_PERIOD = 252
@@ -54,7 +60,7 @@ def load_watchlist(path: str) -> list[str]:
     """
     Load symbol list from:
       - .json  → list of strings or list of objects with a "symbol" key
-      - .csv   → first column is treated as symbols (header optional)
+      - .csv   → first column treated as symbols (header optional)
       - .txt   → one symbol per line, # comments ignored
     """
     p = Path(path)
@@ -64,10 +70,7 @@ def load_watchlist(path: str) -> list[str]:
         with open(p) as f:
             data = json.load(f)
         if isinstance(data, list):
-            if data and isinstance(data[0], str):
-                symbols = data
-            else:
-                symbols = [item["symbol"] for item in data]
+            symbols = data if data and isinstance(data[0], str) else [i["symbol"] for i in data]
         elif isinstance(data, dict):
             symbols = data.get("symbols", list(data.keys()))
         else:
@@ -76,11 +79,10 @@ def load_watchlist(path: str) -> list[str]:
     elif ext == ".csv":
         df = pd.read_csv(p, header=None)
         raw = df.iloc[:, 0].astype(str).tolist()
-        # Skip a header row if the first cell looks like a label
         symbols = [s.strip() for s in raw
-                   if s.strip() and not s.strip().lower() in ("symbol", "ticker", "#")]
+                   if s.strip() and s.strip().lower() not in ("symbol", "ticker", "#")]
 
-    else:  # .txt or anything else
+    else:
         with open(p) as f:
             lines = f.readlines()
         symbols = [l.strip() for l in lines
@@ -89,39 +91,63 @@ def load_watchlist(path: str) -> list[str]:
     return [s.upper() for s in symbols]
 
 
-# ─── Data fetching ────────────────────────────────────────────────────────────
+# ─── IBKR data fetching ───────────────────────────────────────────────────────
 
-def fetch_daily(symbol: str) -> pd.DataFrame:
-    """~2 years of daily OHLCV, fully closed candles only."""
-    df = yf.Ticker(symbol).history(period="2y", interval="1d", auto_adjust=True)
-    if df.empty:
-        return df
-    df.index = df.index.tz_localize(None) if df.index.tz else df.index
+def fetch_daily(ib: IB, symbol: str) -> pd.DataFrame:
+    """Fetch ~2 years of daily OHLCV from IBKR."""
+    contract = Stock(symbol, "SMART", "USD")
+    bars = ib.reqHistoricalData(
+        contract,
+        endDateTime="",
+        durationStr="2 Y",
+        barSizeSetting="1 day",
+        whatToShow="TRADES",
+        useRTH=True,
+        formatDate=1,
+    )
+    if not bars:
+        return pd.DataFrame()
+    df = util.df(bars)
+    df = df.rename(columns={"open": "Open", "high": "High", "low": "Low",
+                             "close": "Close", "volume": "Volume"})
+    df["date"] = pd.to_datetime(df["date"])
+    df = df.set_index("date")
     return df
 
 
-def fetch_weekly(symbol: str) -> pd.DataFrame:
-    """~5 years of weekly OHLCV. Last incomplete week is dropped."""
-    df = yf.Ticker(symbol).history(period="5y", interval="1wk", auto_adjust=True)
-    if df.empty:
-        return df
-    df.index = df.index.tz_localize(None) if df.index.tz else df.index
-    # Drop current (incomplete) week: weekly bar opens Monday, closes Friday
+def fetch_weekly(ib: IB, symbol: str) -> pd.DataFrame:
+    """Fetch ~5 years of weekly OHLCV from IBKR. Drops the current incomplete week."""
+    contract = Stock(symbol, "SMART", "USD")
+    bars = ib.reqHistoricalData(
+        contract,
+        endDateTime="",
+        durationStr="5 Y",
+        barSizeSetting="1 week",
+        whatToShow="TRADES",
+        useRTH=True,
+        formatDate=1,
+    )
+    if not bars:
+        return pd.DataFrame()
+    df = util.df(bars)
+    df = df.rename(columns={"open": "Open", "high": "High", "low": "Low",
+                             "close": "Close", "volume": "Volume"})
+    df["date"] = pd.to_datetime(df["date"])
+    df = df.set_index("date")
+
+    # Drop current incomplete week (bar opens Monday, closes Friday)
     today = pd.Timestamp.today().normalize()
     if not df.empty:
-        week_end = df.index[-1] + pd.Timedelta(days=4)   # Friday
+        week_end = df.index[-1] + pd.Timedelta(days=4)
         if week_end >= today:
             df = df.iloc[:-1]
+
     return df
 
 
 # ─── Indicators ───────────────────────────────────────────────────────────────
 
 def weekly_ma200_metrics(weekly: pd.DataFrame) -> tuple[float, float, bool, int]:
-    """
-    Returns (ma200_current, ma200_prev, trending_up, weeks_above_ma200).
-    Requires at least 201 weekly bars.
-    """
     if len(weekly) < 201:
         return np.nan, np.nan, False, 0
 
@@ -132,7 +158,6 @@ def weekly_ma200_metrics(weekly: pd.DataFrame) -> tuple[float, float, bool, int]
     prev_ma200    = float(ma200.iloc[-2])
     trending_up   = current_ma200 > prev_ma200
 
-    # Count consecutive weeks where close > MA200 (from most recent backward)
     weeks_above = 0
     for i in range(len(closes) - 1, -1, -1):
         if pd.isna(ma200.iloc[i]):
@@ -158,12 +183,11 @@ def calc_avg_dollar_volume(daily: pd.DataFrame, n: int = 20) -> float:
 
 
 def calc_atr(daily: pd.DataFrame, n: int = 14) -> float:
-    """Average True Range over last n days."""
     if len(daily) < n + 1:
         return np.nan
-    high  = daily["High"]
-    low   = daily["Low"]
-    close = daily["Close"]
+    high       = daily["High"]
+    low        = daily["Low"]
+    close      = daily["Close"]
     prev_close = close.shift(1)
     tr = pd.concat([
         high - low,
@@ -174,7 +198,6 @@ def calc_atr(daily: pd.DataFrame, n: int = 14) -> float:
 
 
 def is_two_green_candles(daily: pd.DataFrame) -> bool:
-    """Last two completed daily candles are both bullish (close > open)."""
     if len(daily) < 2:
         return False
     last2 = daily.iloc[-2:]
@@ -182,11 +205,7 @@ def is_two_green_candles(daily: pd.DataFrame) -> bool:
 
 
 def is_rebound_pattern(daily: pd.DataFrame) -> bool:
-    """
-    Bullish rejection / bounce on the latest bar (hammer):
-      - lower wick >= 2× body
-      - close in upper 40% of candle range
-    """
+    """Hammer: lower wick >= 2x body, close in upper 40% of range."""
     if len(daily) < 1:
         return False
     bar = daily.iloc[-1]
@@ -211,7 +230,6 @@ def is_volume_confirmed(daily: pd.DataFrame, n: int = 20) -> bool:
 # ─── Filters ─────────────────────────────────────────────────────────────────
 
 def apply_filters(m: dict) -> bool:
-    """All five mandatory filters must pass."""
     if m["close"] <= m["weekly_ma200"] or not m["weekly_ma200_trending_up"]:
         return False
     if m["avg_dollar_volume"] < MIN_AVG_DOLLAR_VOLUME:
@@ -230,33 +248,27 @@ def apply_filters(m: dict) -> bool:
 def calculate_score(m: dict) -> int:
     score = 0
 
-    # 1. Weekly Trend (0 or 2)
     if m["close"] > m["weekly_ma200"] and m["weekly_ma200_trending_up"]:
         score += 2
 
-    # 2. Support Proximity (0, 1 or 2)
     sd = m["support_distance"]
     if sd <= 0.02:
         score += 2
     elif sd <= 0.05:
         score += 1
 
-    # 3. Amplitude (0, 1 or 2)
     amp = m["amplitude"]
     if amp >= 0.20:
         score += 2
     elif amp >= 0.10:
         score += 1
 
-    # 4. Rebound Pattern (0 or 2)
     if m["rebound_pattern"]:
         score += 2
 
-    # 5. Volume Confirmation (0 or 1)
     if m["volume_confirmed"]:
         score += 1
 
-    # 6. Liquidity Bonus (0 or 1)
     if m["avg_dollar_volume"] >= MIN_AVG_DOLLAR_VOLUME:
         score += 1
 
@@ -266,8 +278,8 @@ def calculate_score(m: dict) -> int:
 def build_comment(m: dict, passes: bool) -> str:
     if pd.isna(m.get("weekly_ma200", np.nan)):
         return "Insufficient data"
-    parts = []
     if passes:
+        parts = []
         if m["support_distance"] <= 0.02:
             parts.append("Very close to support")
         elif m["support_distance"] <= 0.05:
@@ -298,10 +310,10 @@ def build_comment(m: dict, passes: bool) -> str:
 
 # ─── Per-symbol processing ────────────────────────────────────────────────────
 
-def process_symbol(symbol: str, logger: logging.Logger) -> dict | None:
+def process_symbol(ib: IB, symbol: str, logger: logging.Logger) -> dict | None:
     try:
-        daily  = fetch_daily(symbol)
-        weekly = fetch_weekly(symbol)
+        daily  = fetch_daily(ib, symbol)
+        weekly = fetch_weekly(ib, symbol)
 
         if daily.empty or len(daily) < 22:
             logger.warning("%s: insufficient daily data (%d bars)", symbol, len(daily))
@@ -328,21 +340,21 @@ def process_symbol(symbol: str, logger: logging.Logger) -> dict | None:
         atr_pct             = (atr14 / close) if close > 0 else np.nan
 
         m = {
-            "close":                   close,
-            "support":                 support,
-            "resistance":              resistance,
-            "support_distance":        support_distance,
-            "resistance_distance":     resistance_distance,
-            "amplitude":               amplitude,
-            "weekly_ma200":            ma200,
+            "close":                    close,
+            "support":                  support,
+            "resistance":               resistance,
+            "support_distance":         support_distance,
+            "resistance_distance":      resistance_distance,
+            "amplitude":                amplitude,
+            "weekly_ma200":             ma200,
             "weekly_ma200_trending_up": ma200_up,
-            "avg_dollar_volume":       avg_dollar_volume,
-            "rebound_pattern":         is_rebound_pattern(daily),
-            "volume_confirmed":        is_volume_confirmed(daily),
+            "avg_dollar_volume":        avg_dollar_volume,
+            "rebound_pattern":          is_rebound_pattern(daily),
+            "volume_confirmed":         is_volume_confirmed(daily),
         }
 
-        passes = apply_filters(m)
-        score  = calculate_score(m)
+        passes  = apply_filters(m)
+        score   = calculate_score(m)
         comment = build_comment(m, passes)
 
         return {
@@ -391,14 +403,19 @@ def process_symbol(symbol: str, logger: logging.Logger) -> dict | None:
 
 def main():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
-    ts       = datetime.now().strftime("%Y%m%d_%H%M")
-    log_path = os.path.join(OUTPUT_DIR, f"scan_{ts}.log")
-    csv_path = os.path.join(OUTPUT_DIR, f"scan_{ts}.csv")
+    ts        = datetime.now().strftime("%Y%m%d_%H%M")
+    log_path  = os.path.join(OUTPUT_DIR, f"scan_{ts}.log")
+    csv_path  = os.path.join(OUTPUT_DIR, f"scan_{ts}.csv")
     xlsx_path = os.path.join(OUTPUT_DIR, f"scan_{ts}.xlsx")
 
     logger = setup_logging(log_path)
     start_time = datetime.now()
     logger.info("Scanner started")
+
+    # Connect to IBKR
+    ib = IB()
+    ib.connect(IB_HOST, IB_PORT, clientId=IB_CLIENT_ID)
+    logger.info("Connected to IBKR at %s:%s (clientId=%s)", IB_HOST, IB_PORT, IB_CLIENT_ID)
 
     symbols = load_watchlist(WATCHLIST_FILE)
     logger.info("Symbols to scan: %d", len(symbols))
@@ -408,11 +425,14 @@ def main():
 
     for symbol in symbols:
         logger.info("Processing: %s", symbol)
-        row = process_symbol(symbol, logger)
+        row = process_symbol(ib, symbol, logger)
         if row is not None:
             results.append(row)
         else:
             errors += 1
+
+    ib.disconnect()
+    logger.info("Disconnected from IBKR")
 
     df = pd.DataFrame(results)
 
@@ -423,7 +443,6 @@ def main():
     # ── XLSX output ───────────────────────────────────────────────────────────
     with pd.ExcelWriter(xlsx_path, engine="openpyxl") as writer:
         df.to_excel(writer, index=False, sheet_name="Scan")
-        # Auto-fit column widths
         ws = writer.sheets["Scan"]
         for col in ws.columns:
             max_len = max(len(str(cell.value)) if cell.value is not None else 0
