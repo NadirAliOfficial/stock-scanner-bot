@@ -164,7 +164,7 @@ def fetch_weekly(ib: IB, symbol: str) -> pd.DataFrame:
 
 def weekly_ma200_metrics(weekly: pd.DataFrame) -> tuple[float, float, bool, int]:
     if len(weekly) < 201:
-        return np.nan, np.nan, False, 0
+        return np.nan, False, 0
 
     closes = weekly["Close"]
     ma200  = closes.rolling(200).mean()
