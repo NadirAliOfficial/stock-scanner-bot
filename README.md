@@ -1,14 +1,14 @@
 # Stock Scanner Bot
 
 A daily post-market technical analysis scanner for US stocks and ETFs.
-Runs after market close, evaluates a predefined watchlist against technical filters, scores each symbol, and exports results to CSV and Excel.
+Runs after market close via **Interactive Brokers (IB Gateway)**, evaluates a predefined watchlist against technical filters, scores each symbol, and exports results to CSV and Excel.
 
 ---
 
 ## Features
 
 - Loads watchlist from **CSV or JSON**
-- Fetches **daily and weekly** OHLCV data (Yahoo Finance)
+- Fetches **daily and weekly** OHLCV data via **IBKR** (IB Gateway / TWS)
 - Applies **5 mandatory filters** — only fully qualified symbols proceed to scoring
 - Computes a **score from 0 to 10** based on 6 technical criteria
 - Exports a **timestamped CSV + XLSX** on every run (previous results never overwritten)
@@ -143,8 +143,23 @@ MIN_RESISTANCE_DIST   = 0.05
 
 ---
 
+## IBKR Configuration
+
+Connection settings are defined at the top of `scanner.py`:
+
+```python
+IB_HOST      = "127.0.0.1"
+IB_PORT      = 4001        # IB Gateway live (7497 for paper)
+IB_CLIENT_ID = 3           # must be unique across all connected bots
+```
+
+IB Gateway or TWS must be running before executing the scanner.
+
+---
+
 ## Notes
 
 - Only **fully closed candles** are used (daily and weekly)
 - Symbols with insufficient history (e.g. recent IPOs) are skipped and logged
-- The bot performs **analysis only** — no trade execution, no broker connection
+- The bot performs **analysis only** — no trade execution
+- Foreign exchange symbols (e.g. Swiss, German, London) require the corresponding IBKR market data subscription
