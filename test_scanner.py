@@ -321,7 +321,8 @@ class TestScoreVolatility:
             "close": 110, "weekly_ma200": 100, "weekly_ma200_trending_up": True,
             "support_distance": 0.03, "resistance_distance": 0.10,
             "amplitude": 0.15, "rebound_pattern": False,
-            "volume_confirmed": False, "avg_dollar_volume": 25_000_000,
+            "volume_confirmed": False, "two_strong_green": False,
+            "avg_dollar_volume": 25_000_000,
             "volatility_flag": False,
         }
         m.update(overrides)
@@ -452,7 +453,7 @@ class TestFilters:
             "support_distance": 0.03, "resistance_distance": 0.10,
             "amplitude": 0.15, "avg_dollar_volume": 25_000_000,
             "rebound_pattern": False, "volume_confirmed": True,
-            "volatility_flag": True,
+            "two_strong_green": False, "volatility_flag": True,
         }
 
     def test_all_pass(self):
@@ -487,6 +488,35 @@ class TestFilters:
         m = self._passing_metrics()
         m["resistance_distance"] = 0.03
         assert apply_filters(m) is False
+
+    def test_no_confirmation_signal_fails(self):
+        """Candidate must have at least one confirmation signal."""
+        m = self._passing_metrics()
+        m["rebound_pattern"] = False
+        m["volume_confirmed"] = False
+        m["two_strong_green"] = False
+        assert apply_filters(m) is False
+
+    def test_rebound_only_passes(self):
+        m = self._passing_metrics()
+        m["rebound_pattern"] = True
+        m["volume_confirmed"] = False
+        m["two_strong_green"] = False
+        assert apply_filters(m) is True
+
+    def test_volume_only_passes(self):
+        m = self._passing_metrics()
+        m["rebound_pattern"] = False
+        m["volume_confirmed"] = True
+        m["two_strong_green"] = False
+        assert apply_filters(m) is True
+
+    def test_strong_green_only_passes(self):
+        m = self._passing_metrics()
+        m["rebound_pattern"] = False
+        m["volume_confirmed"] = False
+        m["two_strong_green"] = True
+        assert apply_filters(m) is True
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

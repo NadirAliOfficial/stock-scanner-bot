@@ -372,6 +372,14 @@ def apply_filters(m: dict) -> bool:
         return False
     if m["resistance_distance"] < MIN_RESISTANCE_DIST:
         return False
+    # Require at least one confirmation signal
+    confirmations = (
+        m["rebound_pattern"],
+        m["volume_confirmed"],
+        m["two_strong_green"],
+    )
+    if not any(confirmations):
+        return False
     return True
 
 
@@ -449,6 +457,8 @@ def build_comment(m: dict, passes: bool) -> str:
             reasons.append(f"Support too far ({m['support_distance']*100:.1f}%)")
         if m["resistance_distance"] < MIN_RESISTANCE_DIST:
             reasons.append(f"Resistance too close ({m['resistance_distance']*100:.1f}%)")
+        if not any((m["rebound_pattern"], m["volume_confirmed"], m["two_strong_green"])):
+            reasons.append("No confirmation signal")
         return " / ".join(reasons)
 
 
@@ -498,6 +508,7 @@ def process_symbol(ib: IB, symbol: str, logger: logging.Logger) -> dict | None:
             "avg_dollar_volume":        avg_dollar_volume,
             "rebound_pattern":          is_rebound_pattern(daily),
             "volume_confirmed":         is_volume_confirmed(daily),
+            "two_strong_green":         is_two_strong_green_candles(daily),
             "volatility_flag":          volatility_flag,
         }
 
@@ -531,7 +542,7 @@ def process_symbol(ib: IB, symbol: str, logger: logging.Logger) -> dict | None:
             "Dist52WkHigh":         round(dist_52w_high * 100, 2),
             "Dist52WkLow":          round(dist_52w_low * 100, 2),
             # ── Candle / rebound ──────────────────────────────────────
-            "TwoStrongGreenCandles": is_two_strong_green_candles(daily),
+            "TwoStrongGreenCandles": m["two_strong_green"],
             "ReboundPattern":       m["rebound_pattern"],
             # ── Volume ────────────────────────────────────────────────
             "LatestVolume":         latest_volume,
