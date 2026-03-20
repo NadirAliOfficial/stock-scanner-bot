@@ -16,10 +16,6 @@ from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 
-import numpy as np
-import pandas as pd
-from ib_insync import IB
-import scanner as sc
 
 # ── Config persistence ─────────────────────────────────────────────────────────
 
@@ -357,8 +353,14 @@ class ScannerApp(tk.Tk):
         self._log_write("─── Stop requested — finishing current symbol… ───", "summary")
 
     def _run_scan(self, cfg: dict):
-        # ib_insync needs an asyncio event loop in whichever thread it runs in
+        # Must create the event loop BEFORE importing ib_insync/eventkit,
+        # because eventkit grabs the current loop at import time.
         asyncio.set_event_loop(asyncio.new_event_loop())
+
+        import numpy as np          # noqa: F401 (used via scanner)
+        import pandas as pd
+        from ib_insync import IB
+        import scanner as sc
 
         # Attach a logging handler that streams to the GUI
         logger = logging.getLogger("scanner")
@@ -404,33 +406,19 @@ class ScannerApp(tk.Tk):
                     f"  TWS paper        → 7497"
                 )
 
-            # Port is reachable — now do the full IBKR handshake (15s hard limit)
-            connected = threading.Event()
-            connect_error = [None]
-
-            def _do_connect():
-                try:
-                    ib.connect(cfg["ib_host"], cfg["ib_port"],
-                               clientId=cfg["ib_client_id"], timeout=10)
-                except Exception as e:
-                    connect_error[0] = e
-                finally:
-                    connected.set()
-
-            t = threading.Thread(target=_do_connect, daemon=True)
-            t.start()
-            connected.wait(timeout=15)
-
-            if not connected.is_set() or connect_error[0] is not None:
-                err = connect_error[0]
+            # Port is reachable — now do the full IBKR handshake
+            try:
+                ib.connect(cfg["ib_host"], cfg["ib_port"],
+                           clientId=cfg["ib_client_id"], timeout=10)
+            except Exception as e:
                 raise ConnectionError(
                     f"Connected to the port but IBKR did not respond.\n\n"
                     f"Please check:\n"
                     f"  • API connections are enabled in TWS/Gateway settings\n"
                     f"  • 'Allow connections from localhost only' is ticked\n"
                     f"  • Client ID {cfg['ib_client_id']} is not already in use\n\n"
-                    f"Technical detail: {err or 'timeout'}"
-                )
+                    f"Technical detail: {e}"
+                ) from e
 
             logger.info("Connected to IBKR at %s:%s (clientId=%s)",
                         cfg["ib_host"], cfg["ib_port"], cfg["ib_client_id"])
