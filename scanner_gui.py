@@ -411,14 +411,23 @@ class ScannerApp(tk.Tk):
                 ib.connect(cfg["ib_host"], cfg["ib_port"],
                            clientId=cfg["ib_client_id"], timeout=10)
             except Exception as e:
+                detail = f"{type(e).__name__}: {e}" if str(e).strip() else type(e).__name__
                 raise ConnectionError(
                     f"Connected to the port but IBKR did not respond.\n\n"
                     f"Please check:\n"
                     f"  • API connections are enabled in TWS/Gateway settings\n"
                     f"  • 'Allow connections from localhost only' is ticked\n"
                     f"  • Client ID {cfg['ib_client_id']} is not already in use\n\n"
-                    f"Technical detail: {e}"
+                    f"Technical detail: {detail}"
                 ) from e
+
+            if not ib.isConnected():
+                raise ConnectionError(
+                    f"IBKR did not confirm the connection.\n\n"
+                    f"Please check:\n"
+                    f"  • API connections are enabled in TWS/Gateway settings\n"
+                    f"  • Client ID {cfg['ib_client_id']} is not already in use"
+                )
 
             logger.info("Connected to IBKR at %s:%s (clientId=%s)",
                         cfg["ib_host"], cfg["ib_port"], cfg["ib_client_id"])
