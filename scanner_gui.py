@@ -7,6 +7,7 @@ Connects to IBKR, runs the scan, and streams results to an activity log.
 import json
 import logging
 import os
+import socket
 import sys
 import threading
 import tkinter as tk
@@ -388,19 +389,54 @@ class ScannerApp(tk.Tk):
 
         try:
             self._status_var_set("Connecting to IBKR…")
+
+            # Fast socket pre-check (3s) before attempting ib_insync handshake
             try:
-                ib.connect(cfg["ib_host"], cfg["ib_port"],
-                           clientId=cfg["ib_client_id"], timeout=10)
-            except Exception as e:
+                with socket.create_connection(
+                    (cfg["ib_host"], cfg["ib_port"]), timeout=3
+                ):
+                    pass
+            except OSError:
                 raise ConnectionError(
-                    f"Could not connect to IB Gateway / TWS at "
-                    f"{cfg['ib_host']}:{cfg['ib_port']}.\n\n"
+                    f"Nothing is listening on {cfg['ib_host']}:{cfg['ib_port']}.\n\n"
                     f"Please make sure:\n"
-                    f"  • TWS or IB Gateway is running\n"
-                    f"  • API connections are enabled in IBKR settings\n"
-                    f"  • The port number is correct\n\n"
-                    f"Technical detail: {e}"
-                ) from e
+                    f"  • TWS or IB Gateway is open and logged in\n"
+                    f"  • API connections are enabled  (File → Global Configuration → API)\n"
+                    f"  • The port matches what IBKR shows\n\n"
+                    f"Common ports:\n"
+                    f"  IB Gateway live  → 4001\n"
+                    f"  IB Gateway paper → 4002\n"
+                    f"  TWS live         → 7496\n"
+                    f"  TWS paper        → 7497"
+                )
+
+            # Port is reachable — now do the full IBKR handshake (15s hard limit)
+            connected = threading.Event()
+            connect_error = [None]
+
+            def _do_connect():
+                try:
+                    ib.connect(cfg["ib_host"], cfg["ib_port"],
+                               clientId=cfg["ib_client_id"], timeout=10)
+                except Exception as e:
+                    connect_error[0] = e
+                finally:
+                    connected.set()
+
+            t = threading.Thread(target=_do_connect, daemon=True)
+            t.start()
+            connected.wait(timeout=15)
+
+            if not connected.is_set() or connect_error[0] is not None:
+                err = connect_error[0]
+                raise ConnectionError(
+                    f"Connected to the port but IBKR did not respond.\n\n"
+                    f"Please check:\n"
+                    f"  • API connections are enabled in TWS/Gateway settings\n"
+                    f"  • 'Allow connections from localhost only' is ticked\n"
+                    f"  • Client ID {cfg['ib_client_id']} is not already in use\n\n"
+                    f"Technical detail: {err or 'timeout'}"
+                )
 
             logger.info("Connected to IBKR at %s:%s (clientId=%s)",
                         cfg["ib_host"], cfg["ib_port"], cfg["ib_client_id"])
