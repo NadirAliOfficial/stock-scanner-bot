@@ -213,6 +213,15 @@ class ScannerApp(tk.Tk):
         self._log.grid(row=0, column=0, sticky="nsew")
         self._log.tag_config("summary", foreground="#7ec8e3",
                              font=("Consolas", 9, "bold"))
+        self._log.tag_config("progress", foreground="#a0d8a0")
+
+        # ── Progress bar ──────────────────────────────────────────────────────
+        prog_frame = ttk.Frame(self, padding=(12, 0, 12, 4))
+        prog_frame.pack(fill="x")
+        self._progress = ttk.Progressbar(prog_frame, mode="determinate", length=100)
+        self._progress.pack(fill="x")
+        style.configure("TProgressbar", troughcolor="#2a2a3e", background="#3da04e",
+                        thickness=6)
 
         self._log_info("Stock Scanner Bot ready.")
         self._log_info("Configure your connection settings above, then click  ▶ Run Scan.")
@@ -404,19 +413,30 @@ class ScannerApp(tk.Tk):
 
             results = []
             errors  = 0
+            total   = len(symbols)
+            self.after(0, lambda: self._progress.config(maximum=total, value=0))
 
             for i, symbol in enumerate(symbols, 1):
                 if not self.running:
                     logger.info("Scan stopped by user at symbol %s (%d/%d)",
-                                symbol, i, len(symbols))
+                                symbol, i, total)
                     break
-                self._status_var_set(f"Scanning {symbol}  ({i}/{len(symbols)})")
-                logger.info("Processing: %s", symbol)
+                pct = int(i / total * 100)
+                self._status_var_set(f"Scanning {symbol}  ({i}/{total})  {pct}%")
+                self._log_write(
+                    f"  [{i:>{len(str(total))}}/{total}]  {pct:>3}%  ▶  {symbol}",
+                    "progress",
+                )
                 row = sc.process_symbol(ib, symbol, logger)
                 if row is not None:
                     results.append(row)
+                    if row.get("CandidateFlag") == "TRUE":
+                        logger.info("%s  ★ CANDIDATE  score=%s  %s",
+                                    symbol, row.get("Score"), row.get("Comment"))
                 else:
                     errors += 1
+                _i = i
+                self.after(0, lambda v=_i: self._progress.config(value=v))
 
             ib.disconnect()
             logger.info("Disconnected from IBKR")
@@ -480,6 +500,7 @@ class ScannerApp(tk.Tk):
         def _update():
             self._run_btn.config(state="normal")
             self._stop_btn.config(state="disabled")
+            self._progress.config(value=0)
             if success and summary:
                 self._log.config(state="normal")
                 self._log.insert("end", summary + "\n", "summary")
