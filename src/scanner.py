@@ -19,7 +19,7 @@ from ib_insync import IB, Stock, util
 # ─── Configuration ────────────────────────────────────────────────────────────
 
 # Watchlist file: accepts .csv, .json, or .txt (one symbol per line)
-WATCHLIST_FILE = "watchlist.csv"
+WATCHLIST_FILE = "config/watchlist.csv"
 
 OUTPUT_DIR = "output"
 
