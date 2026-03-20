@@ -389,7 +389,8 @@ class ScannerApp(tk.Tk):
         try:
             self._status_var_set("Connecting to IBKR…")
             try:
-                ib.connect(cfg["ib_host"], cfg["ib_port"], clientId=cfg["ib_client_id"])
+                ib.connect(cfg["ib_host"], cfg["ib_port"],
+                           clientId=cfg["ib_client_id"], timeout=10)
             except Exception as e:
                 raise ConnectionError(
                     f"Could not connect to IB Gateway / TWS at "
