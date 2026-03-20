@@ -4,11 +4,8 @@ Stock Scanner — GUI wrapper
 Connects to IBKR, runs the scan, and streams results to an activity log.
 """
 
-import asyncio
 import json
-import logging
 import os
-import socket
 import sys
 import threading
 import tkinter as tk
@@ -46,39 +43,6 @@ def save_config(cfg: dict):
             json.dump(cfg, f, indent=2)
     except Exception:
         pass
-
-
-# ── Logging handler that writes to tkinter Text widget ───────────────────────
-
-class TextHandler(logging.Handler):
-    COLORS = {
-        logging.DEBUG:    "#888888",
-        logging.INFO:     "#e0e0e0",
-        logging.WARNING:  "#f0a500",
-        logging.ERROR:    "#ff5555",
-        logging.CRITICAL: "#ff2222",
-    }
-
-    def __init__(self, text_widget: scrolledtext.ScrolledText):
-        super().__init__()
-        self.widget = text_widget
-        fmt = logging.Formatter("%(asctime)s  %(levelname)-8s  %(message)s",
-                                datefmt="%H:%M:%S")
-        self.setFormatter(fmt)
-        for level, color in self.COLORS.items():
-            self.widget.tag_config(f"lvl_{level}", foreground=color)
-
-    def emit(self, record):
-        msg = self.format(record) + "\n"
-        tag = f"lvl_{record.levelno}"
-
-        def _insert():
-            self.widget.config(state="normal")
-            self.widget.insert("end", msg, tag)
-            self.widget.see("end")
-            self.widget.config(state="disabled")
-
-        self.widget.after(0, _insert)
 
 
 # ── Main application ──────────────────────────────────────────────────────────
@@ -217,6 +181,10 @@ class ScannerApp(tk.Tk):
         self._log.tag_config("summary", foreground="#7ec8e3",
                              font=("Consolas", 9, "bold"))
         self._log.tag_config("progress", foreground="#a0d8a0")
+        self._log.tag_config("err", foreground="#ff5555")
+        self._log.tag_config("lvl_20", foreground="#e0e0e0")
+        self._log.tag_config("lvl_30", foreground="#f0a500")
+        self._log.tag_config("lvl_40", foreground="#ff5555")
 
         # ── Progress bar ──────────────────────────────────────────────────────
         prog_frame = ttk.Frame(self, padding=(12, 0, 12, 4))
@@ -245,7 +213,7 @@ class ScannerApp(tk.Tk):
             self._output_var.set(path)
 
     def _open_output(self):
-        folder = self._output_var.get() or "output"
+        folder = os.path.abspath(self._output_var.get() or "output")
         if not os.path.isdir(folder):
             messagebox.showinfo("Output Folder",
                                 f"The folder does not exist yet:\n{folder}\n\n"
@@ -253,7 +221,7 @@ class ScannerApp(tk.Tk):
             return
         import subprocess
         if sys.platform == "win32":
-            subprocess.Popen(["explorer", os.path.abspath(folder)])
+            subprocess.Popen(["explorer", folder])
         elif sys.platform == "darwin":
             subprocess.Popen(["open", folder])
         else:
@@ -276,7 +244,6 @@ class ScannerApp(tk.Tk):
     def _log_error(self, msg):
         ts = datetime.now().strftime("%H:%M:%S")
         self._log_write(f"{ts}  ERROR     {msg}", "err")
-        self._log.after(0, lambda: self._log.tag_config("err", foreground="#ff5555"))
 
     def _clear_log(self):
         self._log.config(state="normal")
@@ -349,175 +316,117 @@ class ScannerApp(tk.Tk):
 
     def _request_stop(self):
         self.running = False
-        self._status_var.set("Stopping after current symbol…")
-        self._log_write("─── Stop requested — finishing current symbol… ───", "summary")
+        self._status_var.set("Stopping…")
+        self._log_write("─── Stop requested ───", "summary")
+        if hasattr(self, "_proc") and self._proc.poll() is None:
+            self._proc.terminate()
 
     def _run_scan(self, cfg: dict):
-        # Must create the event loop BEFORE importing ib_insync/eventkit,
-        # because eventkit grabs the current loop at import time.
-        asyncio.set_event_loop(asyncio.new_event_loop())
+        """Run scanner.py as a subprocess and stream its output to the log."""
+        import subprocess
 
-        import numpy as np          # noqa: F401 (used via scanner)
-        import pandas as pd
-        from ib_insync import IB
-        import scanner as sc
-
-        # Attach a logging handler that streams to the GUI
-        logger = logging.getLogger("scanner")
-        logger.handlers.clear()
-        logger.setLevel(logging.INFO)
-        gui_handler = TextHandler(self._log)
-        logger.addHandler(gui_handler)
-
+        self._status_var_set("Starting scan…")
         os.makedirs(cfg["output_dir"], exist_ok=True)
-        ts        = datetime.now().strftime("%Y%m%d_%H%M")
-        log_path  = os.path.join(cfg["output_dir"], f"scan_{ts}.log")
-        csv_path  = os.path.join(cfg["output_dir"], f"scan_{ts}.csv")
-        xlsx_path = os.path.join(cfg["output_dir"], f"scan_{ts}.xlsx")
 
-        file_handler = logging.FileHandler(log_path)
-        file_handler.setFormatter(logging.Formatter(
-            "%(asctime)s [%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S"))
-        logger.addHandler(file_handler)
-
-        ib = IB()
-        start_time = datetime.now()
+        python = sys.executable
+        cmd = [
+            python, "-u", "scanner.py",
+            "--host",      cfg["ib_host"],
+            "--port",      str(cfg["ib_port"]),
+            "--client-id", str(cfg["ib_client_id"]),
+            "--watchlist", cfg["watchlist"],
+            "--output",    cfg["output_dir"],
+        ]
 
         try:
-            self._status_var_set("Connecting to IBKR…")
+            self._proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+            )
+        except Exception as e:
+            self.after(0, lambda: messagebox.showerror("Launch Error", str(e)))
+            self._scan_done(success=False)
+            return
 
-            # Fast socket pre-check (3s) before attempting ib_insync handshake
-            try:
-                with socket.create_connection(
-                    (cfg["ib_host"], cfg["ib_port"]), timeout=3
-                ):
-                    pass
-            except OSError:
-                raise ConnectionError(
-                    f"Nothing is listening on {cfg['ib_host']}:{cfg['ib_port']}.\n\n"
-                    f"Please make sure:\n"
-                    f"  • TWS or IB Gateway is open and logged in\n"
-                    f"  • API connections are enabled  (File → Global Configuration → API)\n"
-                    f"  • The port matches what IBKR shows\n\n"
-                    f"Common ports:\n"
-                    f"  IB Gateway live  → 4001\n"
-                    f"  IB Gateway paper → 4002\n"
-                    f"  TWS live         → 7496\n"
-                    f"  TWS paper        → 7497"
-                )
+        # Stream output line by line into the log
+        in_traceback = False
+        error_lines = []
+        for line in self._proc.stdout:
+            if not self.running:
+                self._proc.terminate()
+                break
+            line = line.rstrip()
+            if not line:
+                continue
 
-            # Port is reachable — now do the full IBKR handshake
-            try:
-                ib.connect(cfg["ib_host"], cfg["ib_port"],
-                           clientId=cfg["ib_client_id"], timeout=10)
-            except Exception as e:
-                detail = f"{type(e).__name__}: {e}" if str(e).strip() else type(e).__name__
-                raise ConnectionError(
-                    f"Connected to the port but IBKR did not respond.\n\n"
-                    f"Please check:\n"
-                    f"  • API connections are enabled in TWS/Gateway settings\n"
-                    f"  • 'Allow connections from localhost only' is ticked\n"
-                    f"  • Client ID {cfg['ib_client_id']} is not already in use\n\n"
-                    f"Technical detail: {detail}"
-                ) from e
+            # Detect traceback blocks
+            if line.startswith("Traceback (most recent call"):
+                in_traceback = True
+                error_lines = [line]
+                self._log_write(line, "lvl_40")
+                continue
+            if in_traceback:
+                error_lines.append(line)
+                self._log_write(line, "lvl_40")
+                # Traceback ends at the final exception line (not indented, not "The above...")
+                if not line.startswith(" ") and not line.startswith("The above"):
+                    in_traceback = False
+                continue
 
-            if not ib.isConnected():
-                raise ConnectionError(
-                    f"IBKR did not confirm the connection.\n\n"
-                    f"Please check:\n"
-                    f"  • API connections are enabled in TWS/Gateway settings\n"
-                    f"  • Client ID {cfg['ib_client_id']} is not already in use"
-                )
+            # Colour-code by level keyword
+            if "ERROR" in line or "error" in line.lower() or "failed" in line.lower():
+                tag = "lvl_40"
+                error_lines.append(line)
+            elif "WARNING" in line or "warning" in line.lower():
+                tag = "lvl_30"
+            elif "CANDIDATE" in line or "★" in line:
+                tag = "summary"
+            elif "Processing:" in line or "▶" in line:
+                tag = "progress"
+            else:
+                tag = "lvl_20"
 
-            logger.info("Connected to IBKR at %s:%s (clientId=%s)",
-                        cfg["ib_host"], cfg["ib_port"], cfg["ib_client_id"])
+            # Parse progress from "Processing: AAPL" lines
+            if "Processing:" in line:
+                sym = line.split("Processing:")[-1].strip()
+                self._status_var_set(f"Scanning {sym}…")
 
-            symbols = sc.load_watchlist(cfg["watchlist"])
-            logger.info("Symbols to scan: %d", len(symbols))
+            self._log_write(line, tag)
 
-            # Override module-level config
-            sc.OUTPUT_DIR      = cfg["output_dir"]
-            sc.WATCHLIST_FILE  = cfg["watchlist"]
+        self._proc.wait()
+        rc = self._proc.returncode
 
-            results = []
-            errors  = 0
-            total   = len(symbols)
-            self.after(0, lambda: self._progress.config(maximum=total, value=0))
-
-            for i, symbol in enumerate(symbols, 1):
-                if not self.running:
-                    logger.info("Scan stopped by user at symbol %s (%d/%d)",
-                                symbol, i, total)
-                    break
-                pct = int(i / total * 100)
-                self._status_var_set(f"Scanning {symbol}  ({i}/{total})  {pct}%")
-                self._log_write(
-                    f"  [{i:>{len(str(total))}}/{total}]  {pct:>3}%  ▶  {symbol}",
-                    "progress",
-                )
-                row = sc.process_symbol(ib, symbol, logger)
-                if row is not None:
-                    results.append(row)
-                    if row.get("CandidateFlag") == "TRUE":
-                        logger.info("%s  ★ CANDIDATE  score=%s  %s",
-                                    symbol, row.get("Score"), row.get("Comment"))
-                else:
-                    errors += 1
-                _i = i
-                self.after(0, lambda v=_i: self._progress.config(value=v))
-
-            ib.disconnect()
-            logger.info("Disconnected from IBKR")
-
-            if not results:
-                logger.warning("No results to save — all symbols failed or scan was stopped early.")
-                self._scan_done(success=True, summary=None)
-                return
-
-            df = pd.DataFrame(results)
-            df.to_csv(csv_path, index=False)
-            logger.info("CSV saved: %s", csv_path)
-
-            with pd.ExcelWriter(xlsx_path, engine="openpyxl") as writer:
-                df.to_excel(writer, index=False, sheet_name="Scan")
-                ws = writer.sheets["Scan"]
-                for col in ws.columns:
-                    max_len = max(len(str(cell.value)) if cell.value is not None else 0
-                                  for cell in col)
-                    ws.column_dimensions[col[0].column_letter].width = min(max_len + 2, 40)
-            logger.info("Excel saved: %s", xlsx_path)
-
-            candidates = df[df["CandidateFlag"] == "TRUE"]
-            elapsed    = (datetime.now() - start_time).total_seconds()
-
+        if rc == 0:
             summary = (
-                f"─────────────────────── SUMMARY ───────────────────────\n"
-                f"  Scanned :   {len(symbols)} symbols\n"
-                f"  Processed:  {len(results)}\n"
-                f"  Candidates: {len(candidates)}\n"
-                f"  Errors:     {errors}\n"
-                f"  Duration:   {elapsed:.0f}s\n"
-                f"  Output:     {cfg['output_dir']}\n"
-                f"────────────────────────────────────────────────────────"
+                "────────────────────────────────────────────────────────\n"
+                "  Scan complete. Check output folder for CSV and Excel.\n"
+                "────────────────────────────────────────────────────────"
             )
             self._scan_done(success=True, summary=summary)
-
-        except ConnectionError as e:
-            self.after(0, lambda: messagebox.showerror("Connection Failed", str(e)))
+        else:
+            # Show a user-friendly popup for connection / crash errors
+            if error_lines:
+                # Extract the final exception type (last non-indented line)
+                exc_line = error_lines[-1].strip()
+                if "TimeoutError" in exc_line or "connection" in exc_line.lower():
+                    msg = (
+                        f"IBKR API handshake timed out.\n\n"
+                        f"The socket on {cfg['ib_host']}:{cfg['ib_port']} is open "
+                        f"but IBKR did not complete the API handshake.\n\n"
+                        f"Please check:\n"
+                        f"  • API connections are enabled in IBKR\n"
+                        f"    (Configure → API → Settings)\n"
+                        f"  • 'Allow connections from localhost' is checked\n"
+                        f"  • Client ID {cfg['ib_client_id']} is not already in use\n"
+                        f"  • You are not behind a firewall blocking the connection"
+                    )
+                else:
+                    msg = f"Scanner exited with an error:\n\n{exc_line}"
+                self.after(0, lambda m=msg: messagebox.showerror("Scan Error", m))
             self._scan_done(success=False)
-        except Exception as e:
-            logger.error("Unexpected error: %s", e)
-            self.after(0, lambda: messagebox.showerror(
-                "Scan Error",
-                f"An unexpected error occurred:\n\n{e}\n\n"
-                "Check the activity log for details."))
-            self._scan_done(success=False)
-        finally:
-            try:
-                if ib.isConnected():
-                    ib.disconnect()
-            except Exception:
-                pass
 
     def _status_var_set(self, msg):
         self.after(0, lambda: self._status_var.set(msg))
@@ -550,10 +459,18 @@ class ScannerApp(tk.Tk):
                                        "A scan is currently running.\n\n"
                                        "Close anyway?"):
                 return
+        try:
+            port = int(self._port_var.get())
+        except (ValueError, TypeError):
+            port = 4001
+        try:
+            client_id = int(self._cid_var.get())
+        except (ValueError, TypeError):
+            client_id = 3
         save_config({
             "ib_host":      self._host_var.get(),
-            "ib_port":      int(self._port_var.get() or 4001),
-            "ib_client_id": int(self._cid_var.get() or 3),
+            "ib_port":      port,
+            "ib_client_id": client_id,
             "watchlist":    self._watchlist_var.get(),
             "output_dir":   self._output_var.get(),
         })
