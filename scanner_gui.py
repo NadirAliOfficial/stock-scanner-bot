@@ -4,6 +4,7 @@ Stock Scanner — GUI wrapper
 Connects to IBKR, runs the scan, and streams results to an activity log.
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -14,6 +15,11 @@ import tkinter as tk
 from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, scrolledtext, ttk
+
+import numpy as np
+import pandas as pd
+from ib_insync import IB
+import scanner as sc
 
 # ── Config persistence ─────────────────────────────────────────────────────────
 
@@ -351,20 +357,8 @@ class ScannerApp(tk.Tk):
         self._log_write("─── Stop requested — finishing current symbol… ───", "summary")
 
     def _run_scan(self, cfg: dict):
-        # Import here so the GUI launches instantly even if deps are slow
-        try:
-            import numpy as np
-            import pandas as pd
-            from ib_insync import IB
-
-            import scanner as sc
-        except ImportError as e:
-            self.after(0, lambda: messagebox.showerror(
-                "Missing Dependency",
-                f"A required package is not installed:\n\n{e}\n\n"
-                "Please run:  pip install -r requirements.txt"))
-            self._scan_done(success=False)
-            return
+        # ib_insync needs an asyncio event loop in whichever thread it runs in
+        asyncio.set_event_loop(asyncio.new_event_loop())
 
         # Attach a logging handler that streams to the GUI
         logger = logging.getLogger("scanner")
