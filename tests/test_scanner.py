@@ -41,7 +41,7 @@ def _make_daily(prices: list[dict]) -> pd.DataFrame:
     return df
 
 
-def _make_flat_daily(n: int, open_=100, high=105, low=95, close=102, volume=1_000_000):
+def _make_flat_daily(n: int, open_=100.0, high=105.0, low=95.0, close=102.0, volume=1_000_000):
     """Generate n bars of flat OHLCV data."""
     return _make_daily([
         {"Open": open_, "High": high, "Low": low, "Close": close, "Volume": volume}

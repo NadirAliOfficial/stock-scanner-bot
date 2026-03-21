@@ -1,0 +1,8 @@
+{
+  "extraPaths": ["src"],
+  "venvPath": ".",
+  "venv": ".venv",
+  "reportOptionalMemberAccess": false,
+  "reportAttributeAccessIssue": false,
+  "reportReturnType": false
+}

@@ -464,8 +464,21 @@ def build_comment(m: dict, passes: bool) -> str:
 
 # ─── Per-symbol processing ────────────────────────────────────────────────────
 
+def _resolve_company_name(ib: IB, symbol: str) -> str:
+    """Get company name from IBKR contract details. Returns '' if unavailable."""
+    try:
+        contract = make_contract(symbol)
+        details = ib.reqContractDetails(contract)
+        if details:
+            return details[0].longName or ""
+    except Exception:
+        pass
+    return ""
+
+
 def process_symbol(ib: IB, symbol: str, logger: logging.Logger) -> dict | None:
     try:
+        company_name = _resolve_company_name(ib, symbol)
         daily  = fetch_daily(ib, symbol)
         weekly = fetch_weekly(ib, symbol)
 
@@ -519,6 +532,7 @@ def process_symbol(ib: IB, symbol: str, logger: logging.Logger) -> dict | None:
         return {
             # ── Core spec columns ──────────────────────────────────────
             "Symbol":               symbol,
+            "CompanyName":          company_name,
             "Close":                round(close, 4),
             "Support":              round(support, 4),
             "Resistance":           round(resistance, 4),
