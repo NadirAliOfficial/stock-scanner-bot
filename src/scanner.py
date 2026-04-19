@@ -414,21 +414,23 @@ def build_comment(m: dict, passes: bool) -> str:
 
 # ─── Per-symbol processing ────────────────────────────────────────────────────
 
-def _resolve_company_name(ib: IB, symbol: str) -> str:
+def _resolve_contract_info(ib: IB, symbol: str) -> tuple[str, str]:
+    """Return (company_name, sector) from IBKR contract details."""
     try:
         contract = make_contract(symbol)
         details  = ib.reqContractDetails(contract)
         if details:
-            return details[0].longName or ""
+            d = details[0]
+            return (d.longName or ""), (d.industry or "")
     except Exception:
         pass
-    return ""
+    return "", ""
 
 
 def process_symbol(ib: IB, symbol: str, logger: logging.Logger,
                    scoring_rules: dict) -> dict | None:
     try:
-        company_name = _resolve_company_name(ib, symbol)
+        company_name, sector = _resolve_contract_info(ib, symbol)
         daily  = fetch_daily(ib, symbol)
         weekly = fetch_weekly(ib, symbol)
 
@@ -492,6 +494,7 @@ def process_symbol(ib: IB, symbol: str, logger: logging.Logger,
         return {
             "Symbol":                symbol,
             "CompanyName":           company_name,
+            "Sector":                sector,
             "Close":                 round(close, 4),
             "Support":               round(support, 4),
             "Resistance":            round(resistance, 4),
