@@ -10,6 +10,12 @@ import pytest
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
+import yaml
+
+_SCORING_RULES = yaml.safe_load(
+    open(os.path.join(os.path.dirname(__file__), '..', 'config', 'scoring.yaml'))
+)
+
 from scanner import (
     _find_pivot_lows,
     _find_pivot_highs,
@@ -226,17 +232,21 @@ class TestVolatilityFlag:
         assert flag is False
 
     def test_volatility_flag_in_score(self):
-        """Score should include +1 for volatility_flag=True."""
+        """rebound_pattern=True should add +4 per new scoring matrix."""
         base = {
-            "close": 50, "weekly_ma200": 45, "weekly_ma200_trending_up": False,
-            "support_distance": 0.10, "amplitude": 0.05,
-            "rebound_pattern": False, "volume_confirmed": False,
-            "avg_dollar_volume": 1_000_000, "volatility_flag": False,
+            "near_support": False, "support_distance": 0.10,
+            "near_resistance": False, "resistance_distance": 0.10,
+            "price_above_ma200": False, "ma200_slope": "DOWN",
+            "weeks_above_ma200": 0, "amplitude_valid": False,
+            "amplitude": 0.07, "rsi14": 50.0, "dist_52w_high": -0.20,
+            "volume_confirmed": False, "rebound_pattern": False,
+            "two_strong_green": False, "liquidity_flag": False,
+            "volatility_flag": False, "comment": "",
         }
-        score_no_vol = calculate_score(base)
-        base["volatility_flag"] = True
-        score_with_vol = calculate_score(base)
-        assert score_with_vol == score_no_vol + 1
+        score_no_rebound = calculate_score(base, _SCORING_RULES)
+        base["rebound_pattern"] = True
+        score_with_rebound = calculate_score(base, _SCORING_RULES)
+        assert score_with_rebound == score_no_rebound + 4
 
     def test_volatility_in_comment(self):
         """Comment should mention volatility when flag is set."""
@@ -331,29 +341,42 @@ class TestScoreVolatility:
         m.update(overrides)
         return m
 
-    def test_max_score_includes_volatility(self):
-        """Max possible score should be 11 (was 10 before volatility)."""
-        m = self._base_metrics(
-            support_distance=0.01,    # +2
-            amplitude=0.25,           # +2
-            rebound_pattern=True,     # +2
-            volume_confirmed=True,    # +1
-            volatility_flag=True,     # +1
-            # weekly trend: +2, liquidity: +1 = 11 total
-        )
-        score = calculate_score(m)
-        assert score == 11
+    def test_known_score_combination(self):
+        """near_support(+5) + price_above_ma200(+2) + rebound_pattern(+4) = +11."""
+        m = {
+            "near_support": True, "support_distance": 0.04,
+            "near_resistance": False, "resistance_distance": 0.10,
+            "price_above_ma200": True, "ma200_slope": "DOWN",
+            "weeks_above_ma200": 0, "amplitude_valid": False,
+            "amplitude": 0.07, "rsi14": 50.0, "dist_52w_high": -0.20,
+            "volume_confirmed": False, "rebound_pattern": True,
+            "two_strong_green": False, "liquidity_flag": False,
+            "volatility_flag": False, "comment": "",
+        }
+        # near_support=True → +5, price_above_ma200=True → +2, rebound_pattern=True → +4
+        # ma200_slope=DOWN → -3, dist_52w_high(-0.20) > -0.10 is False → 0
+        # Expected: 5 + 2 + 4 - 3 = 8
+        score = calculate_score(m, _SCORING_RULES)
+        assert score == 8
 
-    def test_score_zero_minimum(self):
-        """Score should be 0 when nothing matches."""
-        m = self._base_metrics(
-            close=50, weekly_ma200=100, weekly_ma200_trending_up=False,
-            support_distance=0.10, amplitude=0.05,
-            rebound_pattern=False, volume_confirmed=False,
-            avg_dollar_volume=1_000_000, volatility_flag=False,
-        )
-        score = calculate_score(m)
-        assert score == 0
+    def test_score_all_negative(self):
+        """near_resistance(−5) + ma200_slope DOWN(−3) + rsi > 70(−2) = −10."""
+        m = {
+            "near_support": False, "support_distance": 0.10,
+            "near_resistance": True, "resistance_distance": 0.03,
+            "price_above_ma200": False, "ma200_slope": "DOWN",
+            "weeks_above_ma200": 0, "amplitude_valid": False,
+            "amplitude": 0.07, "rsi14": 75.0, "dist_52w_high": -0.20,
+            "volume_confirmed": False, "rebound_pattern": False,
+            "two_strong_green": False, "liquidity_flag": False,
+            "volatility_flag": False, "comment": "",
+        }
+        # near_resistance=True → -5, resistance_distance(0.03)<=0.02 False → 0
+        # ma200_slope=DOWN → -3, rsi14(75)>70 → -2
+        # dist_52w_high(-0.20) > -0.10 → False → 0
+        # Expected: -5 - 3 - 2 = -10
+        score = calculate_score(m, _SCORING_RULES)
+        assert score == -10
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

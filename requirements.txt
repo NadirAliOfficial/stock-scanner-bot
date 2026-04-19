@@ -2,3 +2,4 @@ ib_insync>=0.9.86
 pandas>=2.0.0
 numpy>=1.24.0
 openpyxl>=3.1.0
+PyYAML>=6.0

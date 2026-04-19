@@ -1,0 +1,121 @@
+# Stock Scanner — Scoring Rules
+# All thresholds use the same units as the data (decimals for percentages, e.g. 0.02 = 2%).
+# Supported operators: eq, ne, lt, lte, gt, gte
+# All matching rules are applied cumulatively (additive scoring).
+
+rules:
+  # ── Support ─────────────────────────────────────────────────────────────────
+  - field: near_support
+    op: eq
+    value: true
+    points: 5
+
+  - field: support_distance
+    op: lte
+    value: 0.02
+    points: 2
+
+  # ── Resistance ───────────────────────────────────────────────────────────────
+  - field: near_resistance
+    op: eq
+    value: true
+    points: -5
+
+  - field: resistance_distance
+    op: lte
+    value: 0.02
+    points: -2
+
+  # ── MA200 ────────────────────────────────────────────────────────────────────
+  - field: price_above_ma200
+    op: eq
+    value: true
+    points: 2
+
+  - field: ma200_slope
+    op: eq
+    value: "UP"
+    points: 3
+
+  - field: ma200_slope
+    op: eq
+    value: "DOWN"
+    points: -3
+
+  - field: weeks_above_ma200
+    op: gte
+    value: 20
+    points: 1
+
+  # ── Amplitude ────────────────────────────────────────────────────────────────
+  - field: amplitude_valid
+    op: eq
+    value: true
+    points: 1
+
+  - field: amplitude
+    op: gte
+    value: 0.10
+    points: 5
+
+  - field: amplitude
+    op: lt
+    value: 0.05
+    points: 1
+
+  # ── RSI ──────────────────────────────────────────────────────────────────────
+  - field: rsi14
+    op: lt
+    value: 35
+    points: 0
+
+  - field: rsi14
+    op: gt
+    value: 70
+    points: -2
+
+  # ── 52-week high distance (decimal, negative = below high) ───────────────────
+  - field: dist_52w_high
+    op: gt
+    value: -0.10
+    points: -2
+
+  # ── Confirmation signals ─────────────────────────────────────────────────────
+  - field: volume_confirmed
+    op: eq
+    value: true
+    points: 2
+
+  - field: rebound_pattern
+    op: eq
+    value: true
+    points: 4
+
+  - field: two_strong_green
+    op: eq
+    value: true
+    points: 4
+
+  # ── Flags ────────────────────────────────────────────────────────────────────
+  - field: liquidity_flag
+    op: eq
+    value: true
+    points: 1
+
+  - field: volatility_flag
+    op: eq
+    value: true
+    points: 0
+
+# ── Comment-based rules (case-insensitive partial match, cumulative) ──────────
+comment_rules:
+  - contains: "No confirmation signal"
+    points: -4
+  - contains: "Resistance too close"
+    points: -2
+  - contains: "Below MA200"
+    points: -4
+  - contains: "MA200 not trending up"
+    points: -2
+  - contains: "Low liquidity"
+    points: -5

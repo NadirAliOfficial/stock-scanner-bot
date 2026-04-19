@@ -7,6 +7,7 @@ Outputs a shortlist of trade candidates based on predefined technical criteria.
 """
 
 import json
+import operator
 import os
 import logging
 from datetime import datetime
@@ -14,22 +15,19 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import yaml
 from ib_insync import IB, Stock, util
 
 # ─── Configuration ────────────────────────────────────────────────────────────
 
-# Watchlist file: accepts .csv, .json, or .txt (one symbol per line)
-WATCHLIST_FILE = "config/watchlist.csv"
+WATCHLIST_FILE  = "config/watchlist.csv"
+SCORING_CONFIG  = "config/scoring.yaml"
+OUTPUT_DIR      = "output"
 
-OUTPUT_DIR = "output"
-
-# IBKR connection settings
 IB_HOST      = "127.0.0.1"
-IB_PORT      = 4001        # IB Gateway live
-IB_CLIENT_ID = 3           # confirmed by client
+IB_PORT      = 4001
+IB_CLIENT_ID = 3
 
-# Symbol overrides: maps watchlist symbol → (ib_symbol, exchange, currency)
-# Use this for tickers that need non-default IBKR contract definitions
 SYMBOL_MAP = {
     "BRK-B":   ("BRK B",  "SMART", "USD"),
     "NESN.SW": ("NESN",   "EBS",   "CHF"),
@@ -38,20 +36,13 @@ SYMBOL_MAP = {
     "ABB":     ("ABB",    "NYSE",  "USD"),
 }
 
-# Support/resistance lookback window in trading days (~1 year)
-SR_PERIOD = 252
-
-# Filter thresholds
-MIN_AVG_DOLLAR_VOLUME = 20_000_000   # $20M
-MIN_AMPLITUDE        = 0.10          # 10%
-MAX_SUPPORT_DISTANCE = 0.05          # 5%
-MIN_RESISTANCE_DIST  = 0.05          # 5%
-
-# Volume confirmation multiplier (spec: >= 1.5x)
-VOLUME_CONFIRM_MULT = 1.5
-
-# Volatility flag threshold (ATR% above this → high volatility)
-VOLATILITY_ATR_PCT_THRESH = 2.0      # 2% of price
+SR_PERIOD               = 252
+MIN_AVG_DOLLAR_VOLUME   = 20_000_000
+MIN_AMPLITUDE           = 0.10
+MAX_SUPPORT_DISTANCE    = 0.05
+MIN_RESISTANCE_DIST     = 0.05
+VOLUME_CONFIRM_MULT     = 1.5
+VOLATILITY_ATR_PCT_THRESH = 2.0
 
 
 # ─── Logging setup ────────────────────────────────────────────────────────────
@@ -73,12 +64,6 @@ def setup_logging(log_path: str) -> logging.Logger:
 # ─── Watchlist loading ────────────────────────────────────────────────────────
 
 def load_watchlist(path: str) -> list[str]:
-    """
-    Load symbol list from:
-      - .json  → list of strings or list of objects with a "symbol" key
-      - .csv   → first column treated as symbols (header optional)
-      - .txt   → one symbol per line, # comments ignored
-    """
     p = Path(path)
     ext = p.suffix.lower()
 
@@ -107,6 +92,49 @@ def load_watchlist(path: str) -> list[str]:
     return [s.upper() for s in symbols]
 
 
+# ─── Scoring rules ────────────────────────────────────────────────────────────
+
+_OPS = {
+    "eq":  operator.eq,
+    "ne":  operator.ne,
+    "lt":  operator.lt,
+    "lte": operator.le,
+    "gt":  operator.gt,
+    "gte": operator.ge,
+}
+
+
+def load_scoring_rules(path: str) -> dict:
+    with open(path, "r", encoding="utf-8") as fh:
+        return yaml.safe_load(fh)
+
+
+def calculate_score(m: dict, rules: dict) -> int:
+    score = 0
+
+    for rule in rules.get("rules", []):
+        field  = rule["field"]
+        op     = rule["op"]
+        value  = rule["value"]
+        points = rule["points"]
+
+        field_val = m.get(field)
+        if field_val is None:
+            continue
+        if isinstance(field_val, float) and np.isnan(field_val):
+            continue
+
+        if _OPS[op](field_val, value):
+            score += points
+
+    comment = m.get("comment", "")
+    for crule in rules.get("comment_rules", []):
+        if crule["contains"].lower() in comment.lower():
+            score += crule["points"]
+
+    return score
+
+
 # ─── IBKR data fetching ───────────────────────────────────────────────────────
 
 def make_contract(symbol: str) -> Stock:
@@ -115,7 +143,6 @@ def make_contract(symbol: str) -> Stock:
 
 
 def fetch_daily(ib: IB, symbol: str) -> pd.DataFrame:
-    """Fetch ~2 years of daily OHLCV from IBKR."""
     contract = make_contract(symbol)
     bars = ib.reqHistoricalData(
         contract,
@@ -137,7 +164,6 @@ def fetch_daily(ib: IB, symbol: str) -> pd.DataFrame:
 
 
 def fetch_weekly(ib: IB, symbol: str) -> pd.DataFrame:
-    """Fetch ~5 years of weekly OHLCV from IBKR. Drops the current incomplete week."""
     contract = make_contract(symbol)
     bars = ib.reqHistoricalData(
         contract,
@@ -156,7 +182,6 @@ def fetch_weekly(ib: IB, symbol: str) -> pd.DataFrame:
     df["date"] = pd.to_datetime(df["date"])
     df = df.set_index("date")
 
-    # Drop current incomplete week (bar opens Monday, closes Friday)
     today = pd.Timestamp.today().normalize()
     if not df.empty:
         week_end = df.index[-1] + pd.Timedelta(days=4)
@@ -190,10 +215,7 @@ def weekly_ma200_metrics(weekly: pd.DataFrame) -> tuple[float, bool, int]:
     return current_ma200, trending_up, weeks_above
 
 
-# ── 2.1  Support / Resistance — pivot-point detection with clustering ─────────
-
 def _find_pivot_lows(daily: pd.DataFrame, order: int = 5) -> list[float]:
-    """Detect local minima (pivot lows) using a rolling window of ±order bars."""
     lows = daily["Low"].values
     pivots = []
     for i in range(order, len(lows) - order):
@@ -203,7 +225,6 @@ def _find_pivot_lows(daily: pd.DataFrame, order: int = 5) -> list[float]:
 
 
 def _find_pivot_highs(daily: pd.DataFrame, order: int = 5) -> list[float]:
-    """Detect local maxima (pivot highs) using a rolling window of ±order bars."""
     highs = daily["High"].values
     pivots = []
     for i in range(order, len(highs) - order):
@@ -213,7 +234,6 @@ def _find_pivot_highs(daily: pd.DataFrame, order: int = 5) -> list[float]:
 
 
 def _cluster_levels(levels: list[float], tolerance: float = 0.02) -> list[float]:
-    """Cluster nearby price levels (within tolerance %) and return the mean of each cluster."""
     if not levels:
         return []
     sorted_levels = sorted(levels)
@@ -227,63 +247,47 @@ def _cluster_levels(levels: list[float], tolerance: float = 0.02) -> list[float]
 
 
 def calc_support_resistance(daily: pd.DataFrame, period: int) -> tuple[float, float]:
-    """
-    Detect recent support and resistance levels using pivot-point clustering.
-    Support  = nearest clustered pivot-low zone at or below current price.
-    Resistance = nearest clustered pivot-high zone at or above current price.
-    Falls back to period min/max if no pivot zones are found.
-    """
     window = daily.iloc[-period:]
     close = float(window["Close"].iloc[-1])
 
-    # Find and cluster pivot points
-    pivot_lows = _find_pivot_lows(window)
+    pivot_lows  = _find_pivot_lows(window)
     pivot_highs = _find_pivot_highs(window)
 
-    support_zones = _cluster_levels(pivot_lows)
+    support_zones    = _cluster_levels(pivot_lows)
     resistance_zones = _cluster_levels(pivot_highs)
 
-    # Nearest support at or below price
     supports_below = [s for s in support_zones if s <= close]
     support = max(supports_below) if supports_below else float(window["Low"].min())
 
-    # Nearest resistance at or above price
     resistances_above = [r for r in resistance_zones if r >= close]
     resistance = min(resistances_above) if resistances_above else float(window["High"].max())
 
-    # Guard: resistance must be above support
     if resistance <= support:
         resistance = float(window["High"].max())
 
     return support, resistance
 
 
-# ── 2.4  RSI(14) ──────────────────────────────────────────────────────────────
-
 def calc_rsi(daily: pd.DataFrame, n: int = 14) -> float:
-    """Wilder's RSI over n periods."""
     if len(daily) < n + 1:
         return np.nan
-    delta = daily["Close"].diff()
-    gain = delta.clip(lower=0)
-    loss = (-delta.clip(upper=0))
+    delta    = daily["Close"].diff()
+    gain     = delta.clip(lower=0)
+    loss     = (-delta.clip(upper=0))
     avg_gain = gain.ewm(alpha=1.0 / n, min_periods=n, adjust=False).mean()
     avg_loss = loss.ewm(alpha=1.0 / n, min_periods=n, adjust=False).mean()
-    rs = avg_gain / avg_loss
+    rs  = avg_gain / avg_loss
     rsi = 100.0 - (100.0 / (1.0 + rs))
     return float(rsi.iloc[-1])
 
 
-# ── 2.4  52-week high / low distances ────────────────────────────────────────
-
 def calc_52w_distances(daily: pd.DataFrame) -> tuple[float, float]:
-    """Return (distance_from_52w_high, distance_from_52w_low) as fractions."""
-    window = daily.iloc[-252:] if len(daily) >= 252 else daily
-    close = float(window["Close"].iloc[-1])
+    window   = daily.iloc[-252:] if len(daily) >= 252 else daily
+    close    = float(window["Close"].iloc[-1])
     high_52w = float(window["High"].max())
-    low_52w = float(window["Low"].min())
-    dist_high = (close - high_52w) / high_52w   # negative when below high
-    dist_low = (close - low_52w) / low_52w       # positive when above low
+    low_52w  = float(window["Low"].min())
+    dist_high = (close - high_52w) / high_52w
+    dist_low  = (close - low_52w) / low_52w
     return dist_high, dist_low
 
 
@@ -309,38 +313,29 @@ def calc_atr(daily: pd.DataFrame, n: int = 14) -> float:
     return float(tr.iloc[-n:].mean())
 
 
-# ── 2.6  Strong green candles ─────────────────────────────────────────────────
-
 def is_two_strong_green_candles(daily: pd.DataFrame, lookback: int = 20) -> bool:
-    """
-    Check if the last two candles are strong bullish candles.
-    "Strong" = close > open AND body size >= median body size over lookback.
-    """
     if len(daily) < max(2, lookback):
         return False
     last2 = daily.iloc[-2:]
-    # Both must be green
     if not (last2["Close"] > last2["Open"]).all():
         return False
-    # Median body size over recent history as threshold for "strong"
-    bodies = (daily["Close"].iloc[-lookback:] - daily["Open"].iloc[-lookback:]).abs()
+    bodies      = (daily["Close"].iloc[-lookback:] - daily["Open"].iloc[-lookback:]).abs()
     median_body = float(bodies.median())
     if median_body == 0:
         return False
     for _, bar in last2.iterrows():
-        body = bar["Close"] - bar["Open"]  # green so Close > Open
+        body = bar["Close"] - bar["Open"]
         if body < median_body:
             return False
     return True
 
 
 def is_rebound_pattern(daily: pd.DataFrame) -> bool:
-    """Hammer: lower wick >= 2x body, close in upper 40% of range."""
     if len(daily) < 1:
         return False
     bar = daily.iloc[-1]
-    o, h, l, c = bar["Open"], bar["High"], bar["Low"], bar["Close"]
-    body        = abs(c - o)
+    o, h, l, c  = bar["Open"], bar["High"], bar["Low"], bar["Close"]
+    body         = abs(c - o)
     candle_range = h - l
     if candle_range == 0:
         return False
@@ -348,8 +343,6 @@ def is_rebound_pattern(daily: pd.DataFrame) -> bool:
     close_position = (c - l) / candle_range
     return bool((lower_wick >= 2 * body) and (close_position >= 0.60))
 
-
-# ── 2.2  Volume confirmation — >= 1.5x average ───────────────────────────────
 
 def is_volume_confirmed(daily: pd.DataFrame, n: int = 20) -> bool:
     if len(daily) < n + 1:
@@ -372,57 +365,9 @@ def apply_filters(m: dict) -> bool:
         return False
     if m["resistance_distance"] < MIN_RESISTANCE_DIST:
         return False
-    # Require at least one confirmation signal
-    confirmations = (
-        m["rebound_pattern"],
-        m["volume_confirmed"],
-        m["two_strong_green"],
-    )
-    if not any(confirmations):
+    if not any((m["rebound_pattern"], m["volume_confirmed"], m["two_strong_green"])):
         return False
     return True
-
-
-# ─── Scoring ──────────────────────────────────────────────────────────────────
-
-def calculate_score(m: dict) -> int:
-    score = 0
-
-    # Weekly trend
-    if m["close"] > m["weekly_ma200"] and m["weekly_ma200_trending_up"]:
-        score += 2
-
-    # Support proximity
-    sd = m["support_distance"]
-    if sd <= 0.02:
-        score += 2
-    elif sd <= 0.05:
-        score += 1
-
-    # Amplitude
-    amp = m["amplitude"]
-    if amp >= 0.20:
-        score += 2
-    elif amp >= 0.10:
-        score += 1
-
-    # Rebound pattern
-    if m["rebound_pattern"]:
-        score += 2
-
-    # Volume (2.2: using 1.5x threshold)
-    if m["volume_confirmed"]:
-        score += 1
-
-    # Liquidity
-    if m["avg_dollar_volume"] >= MIN_AVG_DOLLAR_VOLUME:
-        score += 1
-
-    # 2.5  Volatility factor
-    if m["volatility_flag"]:
-        score += 1
-
-    return score
 
 
 def build_comment(m: dict, passes: bool) -> str:
@@ -465,10 +410,9 @@ def build_comment(m: dict, passes: bool) -> str:
 # ─── Per-symbol processing ────────────────────────────────────────────────────
 
 def _resolve_company_name(ib: IB, symbol: str) -> str:
-    """Get company name from IBKR contract details. Returns '' if unavailable."""
     try:
         contract = make_contract(symbol)
-        details = ib.reqContractDetails(contract)
+        details  = ib.reqContractDetails(contract)
         if details:
             return details[0].longName or ""
     except Exception:
@@ -476,7 +420,8 @@ def _resolve_company_name(ib: IB, symbol: str) -> str:
     return ""
 
 
-def process_symbol(ib: IB, symbol: str, logger: logging.Logger) -> dict | None:
+def process_symbol(ib: IB, symbol: str, logger: logging.Logger,
+                   scoring_rules: dict) -> dict | None:
     try:
         company_name = _resolve_company_name(ib, symbol)
         daily  = fetch_daily(ib, symbol)
@@ -489,7 +434,7 @@ def process_symbol(ib: IB, symbol: str, logger: logging.Logger) -> dict | None:
             logger.warning("%s: insufficient weekly data (%d bars)", symbol, len(weekly))
             return None
 
-        close = float(daily["Close"].iloc[-1])
+        close             = float(daily["Close"].iloc[-1])
         support, resistance = calc_support_resistance(daily, SR_PERIOD)
         ma200, ma200_up, weeks_above = weekly_ma200_metrics(weekly)
         avg_dollar_volume = calc_avg_dollar_volume(daily)
@@ -515,62 +460,62 @@ def process_symbol(ib: IB, symbol: str, logger: logging.Logger) -> dict | None:
             "resistance":               resistance,
             "support_distance":         support_distance,
             "resistance_distance":      resistance_distance,
+            "near_support":             support_distance <= MAX_SUPPORT_DISTANCE,
+            "near_resistance":          resistance_distance <= MIN_RESISTANCE_DIST,
             "amplitude":                amplitude,
+            "amplitude_valid":          amplitude >= MIN_AMPLITUDE,
             "weekly_ma200":             ma200,
             "weekly_ma200_trending_up": ma200_up,
+            "price_above_ma200":        close > ma200,
+            "ma200_slope":              "UP" if ma200_up else "DOWN",
+            "weeks_above_ma200":        weeks_above,
+            "rsi14":                    rsi14,
+            "dist_52w_high":            dist_52w_high,
             "avg_dollar_volume":        avg_dollar_volume,
             "rebound_pattern":          is_rebound_pattern(daily),
             "volume_confirmed":         is_volume_confirmed(daily),
             "two_strong_green":         is_two_strong_green_candles(daily),
             "volatility_flag":          volatility_flag,
+            "liquidity_flag":           avg_dollar_volume >= MIN_AVG_DOLLAR_VOLUME,
         }
 
         passes  = apply_filters(m)
-        score   = calculate_score(m)
         comment = build_comment(m, passes)
+        m["comment"] = comment
+        score   = calculate_score(m, scoring_rules)
 
         return {
-            # ── Core spec columns ──────────────────────────────────────
-            "Symbol":               symbol,
-            "CompanyName":          company_name,
-            "Close":                round(close, 4),
-            "Support":              round(support, 4),
-            "Resistance":           round(resistance, 4),
-            "SupportDistance":      round(support_distance, 4),
-            "ResistanceDistance":   round(resistance_distance, 4),
-            "Amplitude":            round(amplitude, 4),
-            "Score":                score,
-            "CandidateFlag":        "TRUE" if passes else "FALSE",
-            # ── Weekly trend detail ────────────────────────────────────
-            "WeeklyMA200":          round(ma200, 4),
-            "PriceAboveMA200":      close > ma200,
-            "WeeksAboveMA200":      weeks_above,
-            "MA200Slope":           "UP" if ma200_up else "DOWN",
-            # ── Support / resistance flags ─────────────────────────────
-            "NearSupport":          support_distance <= MAX_SUPPORT_DISTANCE,
-            "NearResistance":       resistance_distance <= MIN_RESISTANCE_DIST,
-            "AmplitudeValid":       amplitude >= MIN_AMPLITUDE,
-            # ── RSI ───────────────────────────────────────────────────
-            "RSI14":                round(rsi14, 2) if not np.isnan(rsi14) else None,
-            # ── 52-week distances ─────────────────────────────────────
-            "Dist52WkHigh":         round(dist_52w_high * 100, 2),
-            "Dist52WkLow":          round(dist_52w_low * 100, 2),
-            # ── Candle / rebound ──────────────────────────────────────
+            "Symbol":                symbol,
+            "CompanyName":           company_name,
+            "Close":                 round(close, 4),
+            "Support":               round(support, 4),
+            "Resistance":            round(resistance, 4),
+            "SupportDistance":       round(support_distance, 4),
+            "ResistanceDistance":    round(resistance_distance, 4),
+            "Amplitude":             round(amplitude, 4),
+            "Score":                 score,
+            "CandidateFlag":         "TRUE" if passes else "FALSE",
+            "WeeklyMA200":           round(ma200, 4),
+            "PriceAboveMA200":       close > ma200,
+            "WeeksAboveMA200":       weeks_above,
+            "MA200Slope":            "UP" if ma200_up else "DOWN",
+            "NearSupport":           support_distance <= MAX_SUPPORT_DISTANCE,
+            "NearResistance":        resistance_distance <= MIN_RESISTANCE_DIST,
+            "AmplitudeValid":        amplitude >= MIN_AMPLITUDE,
+            "RSI14":                 round(rsi14, 2) if not np.isnan(rsi14) else None,
+            "Dist52WkHigh":          round(dist_52w_high * 100, 2),
+            "Dist52WkLow":           round(dist_52w_low * 100, 2),
             "TwoStrongGreenCandles": m["two_strong_green"],
-            "ReboundPattern":       m["rebound_pattern"],
-            # ── Volume ────────────────────────────────────────────────
-            "LatestVolume":         latest_volume,
-            "AvgDailyVolume":       int(round(avg_volume_20d)),
-            "VolumeConfirmed":      m["volume_confirmed"],
-            # ── ATR / volatility ──────────────────────────────────────
-            "ATR14":                round(atr14, 4) if not np.isnan(atr14) else None,
-            "ATR_Pct":              round(atr_pct, 2) if not np.isnan(atr_pct) else None,
-            "VolatilityFlag":       volatility_flag,
-            # ── Liquidity ─────────────────────────────────────────────
-            "AvgDollarVolume":      int(round(avg_dollar_volume)),
-            "LiquidityFlag":        avg_dollar_volume >= MIN_AVG_DOLLAR_VOLUME,
-            # ── Comment ───────────────────────────────────────────────
-            "Comment":              comment,
+            "ReboundPattern":        m["rebound_pattern"],
+            "LatestVolume":          latest_volume,
+            "AvgDailyVolume":        int(round(avg_volume_20d)),
+            "VolumeConfirmed":       m["volume_confirmed"],
+            "ATR14":                 round(atr14, 4) if not np.isnan(atr14) else None,
+            "ATR_Pct":               round(atr_pct, 2) if not np.isnan(atr_pct) else None,
+            "VolatilityFlag":        volatility_flag,
+            "AvgDollarVolume":       int(round(avg_dollar_volume)),
+            "LiquidityFlag":         avg_dollar_volume >= MIN_AVG_DOLLAR_VOLUME,
+            "Comment":               comment,
         }
 
     except Exception as e:
@@ -588,30 +533,27 @@ def main():
     parser.add_argument("--client-id", type=int, default=IB_CLIENT_ID)
     parser.add_argument("--watchlist", default=WATCHLIST_FILE)
     parser.add_argument("--output",    default=OUTPUT_DIR)
+    parser.add_argument("--scoring",   default=SCORING_CONFIG)
     args = parser.parse_args()
 
-    host       = args.host
-    port       = args.port
-    client_id  = args.client_id
-    watchlist  = args.watchlist
-    output_dir = args.output
-
-    os.makedirs(output_dir, exist_ok=True)
+    os.makedirs(args.output, exist_ok=True)
     ts        = datetime.now().strftime("%Y%m%d_%H%M")
-    log_path  = os.path.join(output_dir, f"scan_{ts}.log")
-    csv_path  = os.path.join(output_dir, f"scan_{ts}.csv")
-    xlsx_path = os.path.join(output_dir, f"scan_{ts}.xlsx")
+    log_path  = os.path.join(args.output, f"scan_{ts}.log")
+    csv_path  = os.path.join(args.output, f"scan_{ts}.csv")
+    xlsx_path = os.path.join(args.output, f"scan_{ts}.xlsx")
 
     logger = setup_logging(log_path)
     start_time = datetime.now()
     logger.info("Scanner started")
 
-    # Connect to IBKR
-    ib = IB()
-    ib.connect(host, port, clientId=client_id, timeout=20)
-    logger.info("Connected to IBKR at %s:%s (clientId=%s)", host, port, client_id)
+    scoring_rules = load_scoring_rules(args.scoring)
+    logger.info("Scoring rules loaded from %s", args.scoring)
 
-    symbols = load_watchlist(watchlist)
+    ib = IB()
+    ib.connect(args.host, args.port, clientId=args.client_id, timeout=20)
+    logger.info("Connected to IBKR at %s:%s (clientId=%s)", args.host, args.port, args.client_id)
+
+    symbols = load_watchlist(args.watchlist)
     logger.info("Symbols to scan: %d", len(symbols))
 
     results = []
@@ -619,7 +561,7 @@ def main():
 
     for symbol in symbols:
         logger.info("Processing: %s", symbol)
-        row = process_symbol(ib, symbol, logger)
+        row = process_symbol(ib, symbol, logger, scoring_rules)
         if row is not None:
             results.append(row)
         else:
@@ -630,11 +572,12 @@ def main():
 
     df = pd.DataFrame(results)
 
-    # ── CSV output ────────────────────────────────────────────────────────────
+    if not df.empty:
+        df = df.sort_values("Score", ascending=False).reset_index(drop=True)
+
     df.to_csv(csv_path, index=False)
     logger.info("CSV written:  %s", csv_path)
 
-    # ── XLSX output ───────────────────────────────────────────────────────────
     with pd.ExcelWriter(xlsx_path, engine="openpyxl") as writer:
         df.to_excel(writer, index=False, sheet_name="Scan")
         ws = writer.sheets["Scan"]
