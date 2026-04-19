@@ -124,6 +124,11 @@ def calculate_score(m: dict, rules: dict) -> int:
         if isinstance(field_val, float) and np.isnan(field_val):
             continue
 
+        # Round floats to 4 decimal places before comparing to avoid floating
+        # point precision mismatches (e.g. 0.020000000000000004 failing <= 0.02)
+        if isinstance(field_val, float):
+            field_val = round(field_val, 4)
+
         if _OPS[op](field_val, value):
             score += points
 
