@@ -1,6 +1,6 @@
 # Market Regime Bot — Configuration
 # Adjust thresholds here without touching any code.
-# Priority order: defensive → bull → range (fallback)
+# Priority order: defensive → bull → range → fallback_mode
 
 ibkr:
   host: 127.0.0.1
@@ -26,4 +26,10 @@ regimes:
     qqq_above_ma: true
     vix_max: 20.0
 
-  # range is the fallback — no conditions needed
+  range:
+    # Explicitly detected when VIX is between bull and defensive thresholds
+    vix_min: 20.0
+    vix_max: 25.0
+
+# Used if none of the three regimes above are explicitly matched
+fallback_mode: range

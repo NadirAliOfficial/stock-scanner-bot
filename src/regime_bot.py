@@ -129,6 +129,8 @@ def determine_regime(cfg: dict, indicators: dict, logger: logging.Logger) -> str
     regimes       = cfg["regimes"]
     defensive_cfg = regimes.get("defensive", {})
     bull_cfg      = regimes.get("bull", {})
+    range_cfg     = regimes.get("range", {})
+    fallback      = cfg.get("fallback_mode", "range")
 
     # 1. Defensive — VIX spike overrides everything
     vix_min = defensive_cfg.get("vix_min")
@@ -150,9 +152,23 @@ def determine_regime(cfg: dict, indicators: dict, logger: logging.Logger) -> str
         logger.info("Regime: bull (all bull conditions met)")
         return "bull"
 
-    # 3. Range fallback
-    logger.info("Regime: range (default fallback)")
-    return "range"
+    # 3. Range — explicitly detected via VIX band
+    range_conditions = []
+    r_vix_min = range_cfg.get("vix_min")
+    r_vix_max = range_cfg.get("vix_max")
+    if r_vix_min is not None:
+        range_conditions.append(indicators["vix"] >= float(r_vix_min))
+    if r_vix_max is not None:
+        range_conditions.append(indicators["vix"] < float(r_vix_max))
+
+    if range_conditions and all(range_conditions):
+        logger.info("Regime: range (VIX %.2f within range band %.2f-%.2f)",
+                    indicators["vix"], r_vix_min or 0, r_vix_max or 0)
+        return "range"
+
+    # 4. Fallback — no regime explicitly matched
+    logger.info("Regime: %s (fallback — no explicit regime matched)", fallback)
+    return fallback
 
 
 def main():
