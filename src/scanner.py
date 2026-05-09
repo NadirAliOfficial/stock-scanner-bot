@@ -25,7 +25,7 @@ SCORING_CONFIG  = "config/scoring.yaml"
 OUTPUT_DIR      = "output"
 
 IB_HOST      = "127.0.0.1"
-IB_PORT      = 4001
+IB_PORT      = 4002
 IB_CLIENT_ID = 3
 
 SYMBOL_MAP = {
@@ -535,13 +535,25 @@ def process_symbol(ib: IB, symbol: str, logger: logging.Logger,
 
 def main():
     import argparse
+
+    app_config_path = "config/config.yaml"
+    market_mode = None
+    if os.path.exists(app_config_path):
+        with open(app_config_path, "r", encoding="utf-8") as fh:
+            app_config = yaml.safe_load(fh) or {}
+        market_mode = app_config.get("market_mode")
+
+    scoring_default = (
+        f"config/scoring_{market_mode}.yaml" if market_mode else SCORING_CONFIG
+    )
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--host",      default=IB_HOST)
     parser.add_argument("--port",      type=int, default=IB_PORT)
     parser.add_argument("--client-id", type=int, default=IB_CLIENT_ID)
     parser.add_argument("--watchlist", default=WATCHLIST_FILE)
     parser.add_argument("--output",    default=OUTPUT_DIR)
-    parser.add_argument("--scoring",   default=SCORING_CONFIG)
+    parser.add_argument("--scoring",   default=scoring_default)
     args = parser.parse_args()
 
     os.makedirs(args.output, exist_ok=True)
@@ -553,6 +565,7 @@ def main():
     logger = setup_logging(log_path)
     start_time = datetime.now()
     logger.info("Scanner started")
+    logger.info("Active scoring profile: %s", market_mode or "default")
 
     scoring_rules = load_scoring_rules(args.scoring)
     logger.info("Scoring rules loaded from %s", args.scoring)

@@ -1,0 +1,29 @@
+# Market Regime Bot — Configuration
+# Adjust thresholds here without touching any code.
+# Priority order: defensive → bull → range (fallback)
+
+ibkr:
+  host: 127.0.0.1
+  port: 4002
+  client_id: 4
+
+indicators:
+  spy_ticker: SPY
+  qqq_ticker: QQQ
+  vix_ticker: VIX
+  lookback_days: 300
+  spy_ma_period: 200
+  qqq_ma_period: 200
+
+regimes:
+  defensive:
+    # Triggers if VIX is at or above this level (overrides everything)
+    vix_min: 25.0
+
+  bull:
+    # All three conditions must be true simultaneously
+    spy_above_ma: true
+    qqq_above_ma: true
+    vix_max: 20.0
+
+  # range is the fallback — no conditions needed
