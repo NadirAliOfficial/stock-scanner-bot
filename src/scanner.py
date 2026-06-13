@@ -244,11 +244,12 @@ def _cluster_levels(levels: list[float], tolerance: float = 0.02) -> list[float]
     sorted_levels = sorted(levels)
     clusters = [[sorted_levels[0]]]
     for lvl in sorted_levels[1:]:
-        if (lvl - clusters[-1][0]) / clusters[-1][0] <= tolerance:
+        centroid = float(np.mean(clusters[-1]))
+        if (lvl - centroid) / centroid <= tolerance:
             clusters[-1].append(lvl)
         else:
             clusters.append([lvl])
-    return [np.mean(c) for c in clusters]
+    return [float(np.mean(c)) for c in clusters]
 
 
 def calc_support_resistance(daily: pd.DataFrame, period: int) -> tuple[float, float]:
@@ -571,7 +572,11 @@ def main():
     logger.info("Scoring rules loaded from %s", args.scoring)
 
     ib = IB()
-    ib.connect(args.host, args.port, clientId=args.client_id, timeout=20)
+    try:
+        ib.connect(args.host, args.port, clientId=args.client_id, timeout=20)
+    except Exception as exc:
+        logger.error("Failed to connect to IBKR at %s:%s — %s", args.host, args.port, exc)
+        sys.exit(1)
     logger.info("Connected to IBKR at %s:%s (clientId=%s)", args.host, args.port, args.client_id)
 
     symbols = load_watchlist(args.watchlist)
