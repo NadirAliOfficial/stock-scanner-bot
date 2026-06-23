@@ -68,7 +68,7 @@ def load_watchlist(path: str) -> list[str]:
     ext = p.suffix.lower()
 
     if ext == ".json":
-        with open(p) as f:
+        with open(p, encoding="utf-8") as f:
             data = json.load(f)
         if isinstance(data, list):
             symbols = data if data and isinstance(data[0], str) else [i["symbol"] for i in data]
@@ -84,7 +84,7 @@ def load_watchlist(path: str) -> list[str]:
                    if s.strip() and s.strip().lower() not in ("symbol", "ticker", "#")]
 
     else:
-        with open(p) as f:
+        with open(p, encoding="utf-8") as f:
             lines = f.readlines()
         symbols = [l.strip() for l in lines
                    if l.strip() and not l.strip().startswith("#")]
