@@ -576,7 +576,7 @@ def main():
         ib.connect(args.host, args.port, clientId=args.client_id, timeout=20)
     except Exception as exc:
         logger.error("Failed to connect to IBKR at %s:%s — %s", args.host, args.port, exc)
-        sys.exit(1)
+        sys.sys.exit(1)
     logger.info("Connected to IBKR at %s:%s (clientId=%s)", args.host, args.port, args.client_id)
 
     symbols = load_watchlist(args.watchlist)
