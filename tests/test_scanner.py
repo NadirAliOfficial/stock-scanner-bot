@@ -12,9 +12,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 import yaml
 
-_SCORING_RULES = yaml.safe_load(
-    open(os.path.join(os.path.dirname(__file__, encoding="utf-8"), '..', 'config', 'scoring.yaml'))
-)
+with open(os.path.join(os.path.dirname(__file__), '..', 'config', 'scoring.yaml'),
+          encoding="utf-8") as _fh:
+    _SCORING_RULES = yaml.safe_load(_fh)
 
 from scanner import (
     _find_pivot_lows,
