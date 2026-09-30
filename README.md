@@ -118,7 +118,7 @@ output/
 ### CLI Options
 
 ```bash
-python src/scanner.py --host 127.0.0.1 --port 4001 --client-id 3 --watchlist config/watchlist.csv --output output
+python src/scanner.py --host 127.0.0.1 --port 4002 --client-id 3 --watchlist config/watchlist.csv --output output
 ```
 
 ## Configuration
@@ -140,7 +140,7 @@ VOLATILITY_ATR_PCT_THRESH = 2.0      # 2% ATR threshold
 | Setting | Default | Notes |
 |---------|---------|-------|
 | Host | 127.0.0.1 | localhost |
-| Port | 4001 | IB Gateway live (4002 paper, 7496 TWS live, 7497 TWS paper) |
+| Port | 4002 | IB Gateway paper (4001 live, 7496 TWS live, 7497 TWS paper) |
 | Client ID | 3 | Must be unique across connected bots |
 
 ## Testing
